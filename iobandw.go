@@ -20,6 +20,21 @@ import (
 	"github.com/efarrer/iothrottler"
 )
 
+// context : Store specific value to alter the program behaviour
+type (
+	context struct {
+		limit   uint64
+		verbose bool
+	}
+)
+
+// contexte : Hold runtime value (from commande line args)
+var contexte context
+
+// Copy one file at once
+// src : Source file to copy
+// dst : Destination file
+// bwlimit : Bandwith limit in bytes by second
 func copyFileContents(src, dst string, bwlimit uint64) (written int64, err error) {
 	fmt.Println("copying", src, "to", dst)
 
@@ -28,21 +43,21 @@ func copyFileContents(src, dst string, bwlimit uint64) (written int64, err error
 
 	file, err := os.Open(src)
 	if err != nil {
-		fmt.Println("Error:", err) // handle error
+		// fmt.Println("Error:", err) // handle error
 		return 0, err
 	}
 	defer file.Close()
 
 	throttledFile, err := pool.AddReader(file)
 	if err != nil {
-		fmt.Println("Error:", err) // handle error
+		// fmt.Println("Error:", err) // handle error
 		// handle error
 		return 0, err
 	}
 
 	out, err := os.Create(dst)
 	if err != nil {
-		fmt.Println("Error:", err) // handle error
+		// fmt.Println("Error:", err) // handle error
 		return 0, err
 	}
 	defer func() {
@@ -59,19 +74,17 @@ func copyFileContents(src, dst string, bwlimit uint64) (written int64, err error
 	return bytesw, err
 }
 
+// Check if path contains Wildcard characters
+func isWildcard(value string) bool {
+	return strings.Contains(value, "*") || strings.Contains(value, "?")
+}
+
 // Check if src is a wildcard expression
 // if True, we must have a Path in dst
 // Else dst could be Path or File
 func genericCopy(src, dst string, bwlimit uint64) (written int64, myerr error) {
-	wildcard := strings.Contains(src, "*") || strings.Contains(src, "?")
-	// fmt.Printf("Dir from dst(%s) <=> (%s)\nwild:%v\nBase: (%s)\nisAbs:%v\n", dst, filepath.Dir(dst), wildcard, filepath.Base(dst), filepath.IsAbs(dst))
-	// basepath := filepath.Base(dst)
-	// if wildcard && !strings.HasSuffix(basepath, "\\") {
-	// 	fmt.Printf("HasSuffix \\ is %v", strings.HasSuffix(basepath, "\\"))
-	// 	return 0, fmt.Errorf("Wildcard copy need a target path. not %s", basepath)
-	// }
 	var wholesize int64
-	if wildcard {
+	if isWildcard(src) {
 		pattern := filepath.Base(src)
 		files, err := ioutil.ReadDir(filepath.Dir(src))
 		if err != nil {
@@ -127,6 +140,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "missing required -%s argument/flag\n", req)
 			os.Exit(2) // the same exit code flag.Parse uses
 		}
+	}
+
+	contexte = context{
+		limit:   bandwithLimit,
+		verbose: *verbosePtr,
 	}
 
 	if *verbosePtr {
