@@ -15,16 +15,27 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/dustin/go-humanize"
 	"github.com/efarrer/iothrottler"
+	"github.com/fatih/color"
 )
 
 // context : Store specific value to alter the program behaviour
 type (
 	context struct {
-		limit   uint64
-		verbose bool
+		src          *string
+		dst          *string
+		limitstring  *string
+		limit        uint64
+		verbose      *bool
+		flagNoColor  *bool
+		estimatesize uint64
+		filecount    uint64
+		filecopied   uint64
+		starttime    time.Time
+		endtime      time.Time
 	}
 )
 
@@ -35,8 +46,13 @@ var contexte context
 // src : Source file to copy
 // dst : Destination file
 // bwlimit : Bandwith limit in bytes by second
-func copyFileContents(src, dst string, bwlimit uint64) (written int64, err error) {
-	fmt.Println("copying", src, "to", dst)
+func copyFileContents(size int64, src, dst string, bwlimit uint64) (written int64, err error) {
+	if *contexte.verbose {
+		fmt.Printf("%s -> %s (%s)", src, dst, humanize.Bytes(uint64(size)))
+	}
+	if !*contexte.verbose {
+		fmt.Print(".")
+	}
 
 	pool := iothrottler.NewIOThrottlerPool(iothrottler.BytesPerSecond * iothrottler.Bandwidth(bwlimit))
 	defer pool.ReleasePool()
@@ -46,7 +62,28 @@ func copyFileContents(src, dst string, bwlimit uint64) (written int64, err error
 		// fmt.Println("Error:", err) // handle error
 		return 0, err
 	}
-	defer file.Close()
+	defer func() {
+		file.Close()
+		if err != nil {
+			color.Set(color.FgRed)
+			if *contexte.verbose {
+				fmt.Print(" KO\n")
+			}
+			if !*contexte.verbose {
+				fmt.Print(".")
+			}
+			color.Unset()
+			return
+		}
+		color.Set(color.FgGreen)
+		if *contexte.verbose {
+			fmt.Print(" OK\n")
+		}
+		if !*contexte.verbose {
+			fmt.Print(".")
+		}
+		color.Unset()
+	}()
 
 	throttledFile, err := pool.AddReader(file)
 	if err != nil {
@@ -79,84 +116,157 @@ func isWildcard(value string) bool {
 	return strings.Contains(value, "*") || strings.Contains(value, "?")
 }
 
+func getFiles(ctx *context) (filesOut []os.FileInfo, errOut error) {
+	pattern := filepath.Base(*ctx.src)
+	files, err := ioutil.ReadDir(filepath.Dir(*ctx.src))
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, file := range files {
+		if res, err := filepath.Match(pattern, file.Name()); res {
+			if err != nil {
+				errOut = err
+				return
+			}
+			filesOut = append(filesOut, file)
+			ctx.estimatesize += uint64(file.Size())
+			// fmt.Printf("prise en compte de %s", file.Name())
+		}
+	}
+	return filesOut, nil
+}
+
+func copyOneFile(ctx *context, file os.FileInfo) (written int64, err error) {
+	if isWildcard(*ctx.src) {
+		return copyFileContents(file.Size(), filepath.Join(filepath.Dir(*ctx.src), file.Name()), filepath.Join(*ctx.dst, "\\", file.Name()), ctx.limit)
+	}
+	return copyFileContents(file.Size(), *ctx.src, *ctx.dst, ctx.limit)
+}
+
+func fixedCopy(ctx *context, files []os.FileInfo) (written int64, err error) {
+	var wholesize int64
+	ctx.filecount = uint64(len(files))
+	if *ctx.verbose {
+		timeremaining := time.Duration(ctx.estimatesize/ctx.limit) * time.Second
+		fmt.Printf("Total size: %s\nFiles: %d\nEstimated time: %v\n",
+			humanize.Bytes(ctx.estimatesize),
+			ctx.filecount,
+			timeremaining)
+		ctx.starttime = time.Now()
+		color.Set(color.FgYellow)
+		fmt.Printf("**START** (%v)\n", ctx.starttime)
+		color.Unset()
+		defer func() { ctx.endtime = time.Now() }()
+	}
+	for _, file := range files {
+		bytesco, err := copyOneFile(ctx, file)
+		if err != nil {
+			return wholesize, err
+		}
+		ctx.filecopied++
+		wholesize += bytesco
+	}
+	return wholesize, nil
+}
+
 // Check if src is a wildcard expression
 // if True, we must have a Path in dst
 // Else dst could be Path or File
-func genericCopy(src, dst string, bwlimit uint64) (written int64, myerr error) {
-	var wholesize int64
-	if isWildcard(src) {
-		pattern := filepath.Base(src)
-		files, err := ioutil.ReadDir(filepath.Dir(src))
-		if err != nil {
-			log.Fatal(err)
-		}
-		for _, file := range files {
-			if res, err := filepath.Match(pattern, file.Name()); res {
-				if err != nil {
-					return 0, err
-				}
-				// fmt.Println(file.Name(), "must be processed!")
-				bytesco, err := copyFileContents(filepath.Join(filepath.Dir(src), file.Name()), filepath.Join(dst, "\\", file.Name()), bwlimit)
-				if err != nil {
-					return 0, err
-				}
-				wholesize += bytesco
-			}
-		}
-		return wholesize, nil
-	}
-	// not in wildcard
-	// fmt.Println(src, "will be be processed!")
-	bytesco, err := copyFileContents(src, dst, bwlimit)
+func genericCopy(ctx *context) (written int64, myerr error) {
+	// var files []os.FileInfo
+	files, err := getFiles(ctx)
 	if err != nil {
 		return 0, err
 	}
-	return bytesco, nil
+	bytes, err := fixedCopy(ctx, files)
+	if *ctx.verbose {
+		elapsedtime := ctx.endtime.Sub(ctx.starttime)
+		seconds := int64(elapsedtime.Seconds())
+		if seconds == 0 {
+			seconds = 1
+		}
+		// Use handy standard colors
+		color.Set(color.FgYellow)
+		fmt.Printf("**END** (%v)\n  REPORT:\n  - Elapsed time: %v\n  - Average bandwith usage: %v/s\n  - Files: %d copied on %d\n",
+			ctx.endtime,
+			elapsedtime,
+			humanize.Bytes(uint64(bytes/seconds)),
+			ctx.filecopied,
+			ctx.filecount)
+		color.Unset() // Don't forget to unset
+	}
+	return bytes, err
 }
 
-// V 1.0 - Initial release - 2017 05 17
-func main() {
-	fmt.Println("iobandw - IO with BandWith control - C.m. 2017 - V1.0")
-	required := []string{"src", "dst"}
-
-	srcPtr := flag.String("src", "", "Source file specification")
-	dstPtr := flag.String("dst", "", "Target path")
-	bandwithLimitPtr := flag.String("limit", "32k", "Bytes per second limit (default 32KB/s)")
-	verbosePtr := flag.Bool("verbose", false, "Verbose mode")
-
+func setFlagList(ctx *context) {
+	ctx.src = flag.String("src", "", "Source file specification")
+	ctx.dst = flag.String("dst", "", "Target path")
+	ctx.limitstring = flag.String("limit", "32k", "Bytes per second limit (default 32KB/s)")
+	ctx.verbose = flag.Bool("verbose", false, "Verbose mode")
+	ctx.flagNoColor = flag.Bool("no-color", false, "Disable color output")
 	flag.Parse()
+}
 
-	bandwithLimit, err := humanize.ParseBytes(*bandwithLimitPtr)
-	if err != nil {
-		fmt.Println("Limit value - Error:", err) // handle error
-		return
+// Check args and return error if anything is wrong
+func processArgs(ctx *context) (err error) {
+	required := []string{"src", "dst"}
+	setFlagList(&contexte)
+	if *ctx.flagNoColor {
+		color.NoColor = true // disables colorized output
 	}
 
+	ctxlimit, err := humanize.ParseBytes(*ctx.limitstring)
+	if err != nil {
+		return fmt.Errorf("Limit value - Error:%s", err) // handle error
+	}
+	ctx.limit = ctxlimit
 	seen := make(map[string]bool)
 	flag.Visit(func(f *flag.Flag) { seen[f.Name] = true })
 	for _, req := range required {
 		if !seen[req] {
 			// or possibly use `log.Fatalf` instead of:
-			fmt.Fprintf(os.Stderr, "missing required -%s argument/flag\n", req)
-			os.Exit(2) // the same exit code flag.Parse uses
+			return fmt.Errorf("missing required -%s argument/flag", req)
 		}
 	}
 
-	contexte = context{
-		limit:   bandwithLimit,
-		verbose: *verbosePtr,
+	if *ctx.verbose {
+		fmt.Println("limit is", humanize.Bytes(uint64(ctx.limit)), "by second")
+		fmt.Printf("approx. %sit/s.\n\n", strings.ToLower(humanize.Bytes(uint64(ctx.limit*9))))
+	}
+	return nil
+}
+
+// VERSION_NUM : Litteral version
+const VERSION_NUM = "1.1"
+
+// V 1.0 - Initial release - 2017 05 17
+// V 1.0.1 - Testing
+// V 1.1 - More feedback (bandwith estimated and bandwith real usage)
+func main() {
+	fmt.Printf("iobandw - IO with BandWith control - C.m. 2017 - V%s\n", VERSION_NUM)
+	if err := processArgs(&contexte); err != nil {
+		// Bad args
+		color.Set(color.FgRed)
+		fmt.Println(err)
+		color.Unset()
+		os.Exit(2)
 	}
 
-	if *verbosePtr {
-		fmt.Println("limit is", humanize.Bytes(uint64(bandwithLimit)), "by second")
-		fmt.Printf("approx. %sit/s.\n  ", strings.ToLower(humanize.Bytes(uint64(bandwithLimit*9))))
-	}
-
-	copied, err := genericCopy(*srcPtr, *dstPtr, bandwithLimit)
+	copied, err := genericCopy(&contexte)
 	if err != nil {
-		fmt.Println("Error:", err) // handle error
+		color.Set(color.FgRed)
+		fmt.Println("\nError:", err) // handle error
+		color.Unset()
 		os.Exit(1)
 	}
-	fmt.Printf("%d (%s) bytes copied.\n", copied, humanize.Bytes(uint64(copied)))
+	color.Set(color.FgGreen)
+	if contexte.filecopied != contexte.filecount {
+		color.Set(color.FgRed)
+	}
+	fmt.Printf("\n%d (%s) bytes copied to %d file(s).\n",
+		copied,
+		humanize.Bytes(uint64(copied)),
+		contexte.filecopied)
+	color.Unset()
 	os.Exit(0)
 }
