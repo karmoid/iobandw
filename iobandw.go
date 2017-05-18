@@ -116,6 +116,7 @@ func isWildcard(value string) bool {
 	return strings.Contains(value, "*") || strings.Contains(value, "?")
 }
 
+// Get the files' list to copy
 func getFiles(ctx *context) (filesOut []os.FileInfo, errOut error) {
 	pattern := filepath.Base(*ctx.src)
 	files, err := ioutil.ReadDir(filepath.Dir(*ctx.src))
@@ -136,6 +137,7 @@ func getFiles(ctx *context) (filesOut []os.FileInfo, errOut error) {
 	return filesOut, nil
 }
 
+// Copy one file to another file
 func copyOneFile(ctx *context, file os.FileInfo) (written int64, err error) {
 	if isWildcard(*ctx.src) {
 		return copyFileContents(file.Size(), filepath.Join(filepath.Dir(*ctx.src), file.Name()), filepath.Join(*ctx.dst, "\\", file.Name()), ctx.limit)
@@ -143,6 +145,8 @@ func copyOneFile(ctx *context, file os.FileInfo) (written int64, err error) {
 	return copyFileContents(file.Size(), *ctx.src, *ctx.dst, ctx.limit)
 }
 
+// No more Wildcard and selection in this Array
+// fixedCopy because the Src array is predefined
 func fixedCopy(ctx *context, files []os.FileInfo) (written int64, err error) {
 	var wholesize int64
 	ctx.filecount = uint64(len(files))
@@ -185,7 +189,6 @@ func genericCopy(ctx *context) (written int64, myerr error) {
 		if seconds == 0 {
 			seconds = 1
 		}
-		// Use handy standard colors
 		color.Set(color.FgYellow)
 		fmt.Printf("**END** (%v)\n  REPORT:\n  - Elapsed time: %v\n  - Average bandwith usage: %v/s\n  - Files: %d copied on %d\n",
 			ctx.endtime,
@@ -198,6 +201,7 @@ func genericCopy(ctx *context) (written int64, myerr error) {
 	return bytes, err
 }
 
+// Prepare Command Line Args parsing
 func setFlagList(ctx *context) {
 	ctx.src = flag.String("src", "", "Source file specification")
 	ctx.dst = flag.String("dst", "", "Target path")
@@ -236,14 +240,14 @@ func processArgs(ctx *context) (err error) {
 	return nil
 }
 
-// VERSION_NUM : Litteral version
-const VERSION_NUM = "1.1"
+// VersionNum : Litteral version
+const VersionNum = "1.1"
 
 // V 1.0 - Initial release - 2017 05 17
 // V 1.0.1 - Testing
 // V 1.1 - More feedback (bandwith estimated and bandwith real usage)
 func main() {
-	fmt.Printf("iobandw - IO with BandWith control - C.m. 2017 - V%s\n", VERSION_NUM)
+	fmt.Printf("iobandw - IO with BandWith control - C.m. 2017 - V%s\n", VersionNum)
 	if err := processArgs(&contexte); err != nil {
 		// Bad args
 		color.Set(color.FgRed)
