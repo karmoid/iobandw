@@ -23,6 +23,7 @@ import (
 )
 
 // context : Store specific value to alter the program behaviour
+// Like an Args container
 type (
 	context struct {
 		src          *string
@@ -124,7 +125,7 @@ func getFiles(ctx *context) (filesOut []os.FileInfo, errOut error) {
 		log.Fatal(err)
 	}
 	for _, file := range files {
-		if res, err := filepath.Match(pattern, file.Name()); res {
+		if res, err := filepath.Match(strings.ToLower(pattern), strings.ToLower(file.Name())); res {
 			if err != nil {
 				errOut = err
 				return
@@ -241,15 +242,15 @@ func processArgs(ctx *context) (err error) {
 }
 
 // VersionNum : Litteral version
-const VersionNum = "1.1"
+const VersionNum = "1.2"
 
 // V 1.0 - Initial release - 2017 05 17
 // V 1.0.1 - Testing
 // V 1.1 - More feedback (bandwith estimated and bandwith real usage)
+// V 1.2 - Correction - Match pattern doesn't Lowercase both parts of test (pattern and file found)
 func main() {
 	fmt.Printf("iobandw - IO with BandWith control - C.m. 2017 - V%s\n", VersionNum)
 	if err := processArgs(&contexte); err != nil {
-		// Bad args
 		color.Set(color.FgRed)
 		fmt.Println(err)
 		color.Unset()

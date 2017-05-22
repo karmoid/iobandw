@@ -3,6 +3,7 @@
     {
     "name": "Debug IO",
     "mode": "debug",
+    "args": ["-src=c:\\tools\\test.dmp.7z*","-dst=c:\\temp"]
     }
   ]
 }
